@@ -1,0 +1,5 @@
+哈喽！这里是本人论文《Content-enhanced Bayesian Personalized Ranking》论文的源码
+preprocess-数据预处理
+doc2vec-把live直播描述处理成向量
+dataset-数据集
+BPRV2-算法实现
