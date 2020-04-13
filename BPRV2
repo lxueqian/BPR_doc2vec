@@ -1,0 +1,445 @@
+# Implement BPR.
+# Steffen Rendle, et al. BPR: Bayesian personalized ranking from implicit feedback.
+# Proceedings of the twenty-fifth conference on uncertainty in artificial intelligence. AUAI, 2009. 
+# @author Runlong Yu, Mingyue Cheng, Weibo Gao
+
+import random
+from collections import defaultdict
+import numpy as np
+import math
+import time
+import os
+import json
+from gensim import models,corpora,similarities
+from gensim.models.doc2vec import TaggedDocument,Doc2Vec
+# from sklearn.metrics import roc_auc_score
+# import scores
+
+TODAY = time.strftime('%Y-%m-%d',time.localtime(int(time.time())))
+
+class BPR:
+	Top_K = [10]
+	user_count = 10000 #20000  #10000 
+	item_count = 5483 #5794 #5483   
+	latent_factors = 50
+	lr = 0.1
+	reg = 0.01
+	train_count = 3000
+	gap= 0.1
+	ratio = 0.9
+	train_data_path = '../dataset/'+'train_'+'2019-06-06'+'.txt'
+	# train_dic_path = '../dataset/'+'train_dic_'+TODAY+'.json'
+	test_data_path = '../dataset/'+'test_'+'2019-06-06'+'.txt'
+	# sample_path = '../sample_pairs_0.json'
+	# output_path = '../results/'+'2019-05-29'+'/'
+	size_u_i = user_count * item_count
+	# latent_factors of U & V
+	U = np.random.rand(user_count, latent_factors) 
+	V = np.random.rand(item_count, latent_factors) 
+	biasV = np.random.rand(item_count)
+	test_data = np.zeros((user_count, item_count))
+	embedding_matrix = np.zeros((188496, 6616))
+	train_data = defaultdict(set)
+	testSample = defaultdict(set)  ##test_data的另一种表示形式
+	all_item = set() 
+	test = np.zeros(size_u_i)
+	predict_ = np.zeros(size_u_i)
+	loss = 0
+
+	embedding_vector = np.load("../doc2vec/embedding_vector.npy")
+	model = Doc2Vec.load('../doc2vec/doc2vec.bin')
+	doc = json.loads(open('../doc2vec/doc.txt','r').read())
+	live2id = json.loads(open('../doc2vec/live2id.txt','r').read())
+	id2live = json.loads(open('../doc2vec/id2live.txt','r').read())
+	id2item = json.loads(open('../dataset/'+'id2item_'+'2019-06-06'+'.txt','r').read())
+	item2id = json.loads(open('../dataset/'+'item2id_'+'2019-06-06'+'.txt','r').read())
+	
+	# item2index = json.loads(open('item2index.json','r').read())
+	# embedding_matrix = np.load("embedding_matrix.npy")
+
+	def load_data(self, path):
+		count = 0 
+		with open(path, 'r') as f:
+			for line in f.readlines():
+				u, i = line.split(" ")
+				u = int(u)
+				i = int(i)
+				self.train_data[u].add(i)
+				self.all_item.add(i)
+				count += 1
+		print('训练集用户个数：',len(self.train_data))
+		print('训练集live个数：', len(self.all_item))
+		print('训练集user——item pair个数：',count)
+
+	def load_test_data(self, path):
+		file = open(path, 'r')
+		for line in file:
+			line = line.split(' ')
+			user = int(line[0])
+			item = int(line[1])
+			self.test_data[user - 1][item - 1] = 1
+			self.all_item.add(item)
+		print('测试集用户个数：', self.test_data.shape[0])
+		print('训练集和测试集总的live个数：', len(self.all_item))
+		print('测试集user——item pair个数：',np.sum(self.test_data == 1))
+
+	def get_embedding_matrix(self):
+		[rows, cols] = self.embedding_matrix.shape
+		index = 0
+		user2index = {}
+		item2index = defaultdict(dict)
+		for u in range(1,self.user_count+1):
+		# for u in range(1,):
+			user2index[u] = index
+			print('user,len:',u,len(self.train_data[u]),'start')
+			for item in self.train_data[u]:
+				item2index[u][item] = index
+				total_embedding = np.zeros(70)
+				n = len(self.train_data[u])-1
+				for _id in self.train_data[u]:
+					if int(_id) != int(item):
+						total_embedding += self.embedding_vector[int(self.live2id[self.id2item[str(_id)]])]*(1/(4*n))
+					else:
+						total_embedding += self.embedding_vector[int(self.live2id[self.id2item[str(_id)]])]*(3/4)
+
+				sims = self.model.docvecs.most_similar([total_embedding], topn=6616)[-2000:]
+				print('index',index)
+				for ite in sims:
+					self.embedding_matrix[index,int(ite[0])] = 1
+				index = index+1
+
+		with open('user2index.json','w') as f:
+			f.write(json.dumps(user2index))
+		with open('item2index.json','w') as f:
+			f.write(json.dumps(item2index))
+		np.save('embedding_matrix.npy',self.embedding_matrix)
+	
+	def sample_ij(self):
+		a = random.uniform(0,1)
+		# print(a)
+
+		if a <= 0.85:
+
+			u = random.randint(1, self.user_count)
+			# sample a positive item from the observed items
+			i = random.sample(self.train_data[u],1)[0]
+			# sample a negative item from the unobserved items
+			j = random.randint(1, self.item_count) #前闭后闭
+			while j in self.train_data[u]:
+			    j = random.randint(1, self.item_count)
+			return u,i,j
+
+		else:
+			# print('start time：',time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))
+			u = random.randint(1, self.user_count)
+			# sample a positive item from the observed items
+			
+			i = random.sample(self.item2index[str(u)].keys(),1)[0]
+			i_index = self.item2index[str(u)][i]
+			# print('i,i_index',i,i_index)
+			# print(self.embedding_matrix[i_index])
+			# print(list(np.where(self.embedding_matrix[i_index]==1)[0]))
+
+			# sample a negative item from the unobserved items
+			j_sims = random.sample(list(np.where(self.embedding_matrix[i_index]==1)[0]),1)[0]
+			while self.id2live[str(j_sims)]  not in self.item2id:
+				# print('j_sims:',j_sims)
+				j_sims = random.sample(list(np.where(self.embedding_matrix[i_index]==1)[0]),1)[0]
+			j = self.item2id[self.id2live[str(j_sims)]]
+
+			while int(j) in self.train_data[u]:
+				# print('j:',j)
+				j_sims = random.sample(list(np.where(self.embedding_matrix[i_index]==1)[0]),1)[0]
+				while self.id2live[str(j_sims)]  not in self.item2id:
+					# print('j_sims',j_sims)
+					j_sims = random.sample(list(np.where(self.embedding_matrix[i_index]==1)[0]),1)[0]
+				j = self.item2id[self.id2live[str(j_sims)]]
+				# print('j,j_sims',j,j_sims)
+
+			# print('end time：',time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))
+			return int(u),int(i),int(j)
+
+
+	def sample_ij_orginal(self):
+		# sample a user
+		# user_sample = random.sample(self.train_data.keys(),20000)
+			# if u not in self.train_data.keys():  #肯定在
+			#     continue
+
+		a = random.uniform(0,1)
+		# print(a)
+		if a <= 1:
+
+			u = random.randint(1, self.user_count)
+			# sample a positive item from the observed items
+			i = random.sample(self.train_data[u],1)[0]
+			# sample a negative item from the unobserved items
+			j = random.randint(1, self.item_count) #前闭后闭
+			while j in self.train_data[u]:
+			    j = random.randint(1, self.item_count)
+			return u,i,j
+
+		else:
+			# print('start time：',time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))
+			u = random.randint(1, self.user_count)
+			# print(u)
+			# sample a positive item from the observed items
+			i = random.sample(self.train_data[u],1)[0]
+
+			total_embedding = np.zeros(70)
+			n = len(self.train_data[u])-1
+			for _id in self.train_data[u]:
+				if _id != i:
+					total_embedding += self.embedding_vector[int(self.live2id[self.id2item[str(_id)]])]*(1/(4*n))
+				else:
+					total_embedding += self.embedding_vector[int(self.live2id[self.id2item[str(_id)]])]*(3/4)
+
+			sims = self.model.docvecs.most_similar([total_embedding], topn=6616)
+
+			# sample a negative item from the unobserved items
+			j = random.randint(1, self.item_count)
+			j_sims = self.live2id[self.id2item[str(j)]]
+
+			sims = [str(i[0]) for i in sims[-3000:]]
+			while (j in self.train_data[u]) or (j_sims not in sims):
+				j = random.randint(1, self.item_count)
+				j_sims = self.live2id[self.id2item[str(j)]]
+				# print('j,j_sims',j,j_sims)
+
+			# print('end time：',time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))
+			return int(u),int(i),int(j)
+
+
+	def train(self):
+		# for user in range(1,self.user_count+1):
+		# user_sample = random.sample(self.train_data.keys(),20000)
+		for user in range(50000): ##一个epoch训练 次
+			u,i,j = self.sample_ij()
+			# print(u,i,j)
+			u -= 1
+			i -= 1
+			j -= 1
+			r_ui = np.dot(self.U[u], self.V[i].T) + self.biasV[i]
+			r_uj = np.dot(self.U[u], self.V[j].T) + self.biasV[j]
+			r_uij = r_ui - r_uj
+			s = 1.0 / (1 + np.exp(r_uij))
+			# update U and V
+			self.U[u] += self.lr * (s * (self.V[i] - self.V[j]) - self.reg * self.U[u])
+			self.V[i] += self.lr * (s * self.U[u] - self.reg * self.V[i])
+			self.V[j] += self.lr * (s * (-self.U[u]) - self.reg * self.V[j])
+			# update biasV
+			self.biasV[i] += self.lr * (s - self.reg * self.biasV[i])
+			self.biasV[j] += self.lr * (-s - self.reg * self.biasV[j])
+			# break
+			self.loss += -math.log(self.sigmoid(r_uij)) \
+			# self.loss += -s \
+			+ self.reg*np.dot(self.U[u],self.U[u]) + self.reg*np.dot(self.V[i],self.V[i]) + self.reg*np.dot(self.V[j],self.V[j]) \
+						+ self.reg*np.dot(self.biasV[i],self.biasV[i]) + self.reg*np.dot(self.biasV[j],self.biasV[j])
+
+	def predict(self, user, item):
+		if user in self.train_data and item in self.all_item:
+			val = self.V[item-1].dot(self.U[user-1])+self.biasV[item-1]
+			predict = self.sigmoid(val)
+			return predict
+		else:
+		#     return sigmoid(self.data.globalMean)
+			print('new user or new item')
+			return 0
+
+	def sigmoid(self,inx):
+		if inx>=0:      #对sigmoid函数的优化，避免了出现极大的数据溢出
+			return 1.0/(1+np.exp(-inx))
+		else:
+			return np.exp(inx)/(1+np.exp(inx))
+
+	def rankingMeasure(self, res):
+		measure = []
+		for N in self.Top_K:
+			Nrec = {}
+			for user in res:
+				Nrec[user] = res[user][:N]   ###每个用户都求推荐前N个的计算指标,之后都用Nrec不用res
+
+			if len(self.testSample) != len(Nrec):
+				print(len(self.testSample))
+				print(len(Nrec),len(res))
+				print('The Lengths of test set and predicted set are not match!')
+				exit(-1)
+			indicators = []
+			#### hits
+			hitCount = {}
+			for user in self.testSample:
+				item_set = self.testSample[user]
+				predicted = [item[0] for item in Nrec[user]]
+				hitCount[user] = len(item_set & set(predicted))
+
+			#### precision
+			prec = sum([hitCount[user] for user in hitCount])
+			prec_ratio = float(prec)/(len(hitCount)*min(len(self.testSample[user]),N))
+			indicators.append('Precision:' + str(prec_ratio) + '\n')
+
+			# #### Recall
+			# recall_list = [float(hitCount[user])/len(self.testSample[user]) for user in hitCount]
+			# recall = sum(recall_list) / float(len(recall_list))
+			# indicators.append('Recall:' + str(recall) + '\n')
+
+			# #### F1 
+			# if (prec_ratio + recall) != 0:
+			# 	F1 = 2* prec_ratio * recall /(prec_ratio+recall)
+			# else:
+			# 	F1 = 0
+			# indicators.append('F1:' + str(F1) + '\n')
+
+			# #### MAP
+			# sum_prec = 0
+			# for user in Nrec:
+			# 	hits = 0
+			# 	precision = 0
+			# 	for n, item in enumerate(Nrec[user]):
+			# 		if item[0] in self.testSample[user]:
+			# 			hits += 1
+			# 			precision += hits/(n+1.0)
+			# 	sum_prec += precision/(min(len(self.testSample[user]),N)+0.0)
+			# MAP = sum_prec/len(Nrec)
+			# indicators.append('MAP:' + str(MAP) + '\n')
+
+			#### NDCG
+			sum_NDCG = 0
+			for user in Nrec:
+				DCG = 0
+				IDCG = 0
+				for n, item in enumerate(Nrec[user]):
+					if item[0] in self.testSample[user]:
+						DCG += 1.0/math.log(n+2)
+				for n, item in enumerate(list(self.testSample[user])[:min(len(self.testSample[user]),N)]):
+					IDCG += 1.0/math.log(n+2)
+				sum_NDCG += DCG/IDCG
+			NDCG = sum_NDCG/(len(Nrec))
+			indicators.append('NDCG:' + str(NDCG) + '\n')
+
+			# #### AUC
+			# predict_matrix = self.predict(self.U, self.V)
+			# self.predict_ = predict_matrix.getA().reshape(-1)
+			# self.predict_ = pre_handel(self.train_data, self.predict_, self.item_count)
+			# auc_score = roc_auc_score(self.test, self.predict_)
+			# indicators.append('AUC:' + str(auc_score) + '\n')
+
+			measure += indicators
+			# measure.append('Top ' + str(N) + '\n')
+			
+		return measure,Nrec
+
+	def ranking_performance(self):
+		recList = {}  
+		####找到测试集中的每一个user看过的live
+		indexes = np.argwhere(self.test_data == 1)
+		for index in indexes:
+			self.testSample[int(index[0])+1].add(int(index[1])+1)
+		# print('测试用户个数：', len(self.testSample))
+
+		####对于每个测试集中的user,圈100个候选集对其进行预测排序
+		for user in self.testSample:
+			Candidate_item_set = set()
+			Candidate_item_set = Candidate_item_set | self.testSample[user]
+			while True:
+				item = random.randint(1,self.item_count)
+				if item not in self.train_data[user]:
+					Candidate_item_set.add(item)
+				if len(Candidate_item_set) == 100:
+					break
+
+			itemSet = {}
+			for item in Candidate_item_set:
+				itemSet[item] = self.predict(user,item)
+			# print('itemSet',itemSet)
+
+			Nrecommendations = []
+			for item in itemSet:
+				Nrecommendations.append((item, itemSet[item]))
+
+			Nrecommendations.sort(key=lambda d: d[1], reverse=True)
+			scores = [item[1] for item in Nrecommendations]
+			resNames = [item[0] for item in Nrecommendations]
+			recList[user] = list(zip(resNames, scores))
+
+		measure,Nrec = self.rankingMeasure(recList)
+		return measure,Nrec
+
+
+	def main(self):
+		print('=='*20)
+		print('ratio:',self.ratio)
+		self.load_data(self.train_data_path)
+		self.load_test_data(self.test_data_path)
+		self.get_embedding_matrix()
+
+		# for u in range(self.user_count):
+		# 	for item in range(self.item_count):
+		# 		if int(self.test_data[u][item]) == 1:
+		# 			self.test[u * self.item_count + item] = 1
+		# 		else:
+		# 			self.test[u * self.item_count + item] = 0
+		# # # training
+		# old_loss = 0
+		# iter_list = []
+		# loss_list = []
+		# precision_list = []
+		# NDCG_list = []
+		# for i in range(self.train_count):
+		# 	print('=='*10,' 第',i+1,'轮训练 ','=='*10)
+		# 	self.loss = 0
+		# 	self.train()
+		# 	delta_loss = self.loss - old_loss
+		# 	if abs(delta_loss) < self.gap:
+		# 		print('delta_loss:',delta_loss)
+		# 		print('final_loss:',self.loss)
+		# 	# if i>=200:
+		# 		return iter_list,loss_list,precision_list,NDCG_list
+		# 	old_loss = self.loss
+
+		# 	print('Loss:',self.loss,'\n','delta_loss:',delta_loss)
+
+		# 	### 输出评价指标和召回结果
+		# 	measure,Nrec = self.ranking_performance()
+
+		# 	# print('-'*40)
+		# 	# print('Ranking Performance '+'第'+' ['+str(i+1)+'] '+'轮'+' (Top-10 On 100 sampled items of all users)')
+		# 	# print(measure)
+		# 	iter_list.append(i)
+		# 	loss_list.append(self.loss)
+		# 	for i,m in enumerate(measure):
+		# 		print(m.strip())
+		# 		if i == 0:
+		# 			precision_list.append(m.strip().split(':')[1])
+		# 		else:
+		# 			NDCG_list.append(m.strip().split(':')[1])
+
+		# 	# print('-'*40)
+
+		# 	### 保存指标和结果
+		# 	# if not os.path.exists(self.output_path):
+		# 	# 	os.makedirs(self.output_path)
+		# 	# currentTime = time.strftime('%Y-%m-%d %H-%M-%S',time.localtime(int(time.time())))
+		# 	# fileName = 'BPR'+'@'+currentTime+'-measure-'+str(i+1)+'.txt'
+		# 	# with open(self.output_path+fileName,'w') as f:
+		# 	# 	f.write(json.dumps(measure))
+		# 	# print('The measures has been output to ',os.path.abspath(self.output_path),'.')
+
+		# 	# fileName = 'BPR'+'@'+currentTime+'-rating-predictions-'+str(i+1)+'.txt'
+		# 	# with open(self.output_path+fileName,'w') as f:
+		# 	# 	f.write(json.dumps(Nrec))
+		# 	# print('The predictions has been output to ',os.path.abspath(self.output_path),'.')
+
+
+def pre_handel(set, predict, item_count):
+	# Ensure the recommendation cannot be positive items in the training set.
+	for u in set.keys():
+		for j in set[u]:
+			predict[(u - 1) * item_count + j - 1] = 0
+	return predict
+
+if __name__ == '__main__':
+	bpr = BPR()
+	iter_list,loss_list,precision_list,NDCG_list = bpr.main()
+	# with open('reslist.json','w') as f:
+	# 	f.write(json.dumps(iter_list)+'\n'+json.dumps(loss_list)+'\n'+json.dumps(precision_list)+'\n'+json.dumps(NDCG_list))
+	# # print(bpr.train_dic)
