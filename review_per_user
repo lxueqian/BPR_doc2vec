@@ -1,0 +1,100 @@
+# encoding: utf-8
+import numpy as np
+import json
+import os
+import time
+import random
+from collections import defaultdict
+
+PATH_REVIEW = '/home/lixueqian/lxq/live_review/2019-05-20/review.json'
+PATH_LIVE = '/home/lixueqian/lxq/live_per_user/2019-05-21/live_per_user.json'
+review_per_user = defaultdict(dict)
+live_see_per_user = {}  #defaultdict(list)
+
+def get_reviews():
+	with open(PATH_REVIEW,'r') as f:
+		for line in f.readlines():
+			load_dict = json.loads(line)
+			if load_dict['author_id'] == '0':
+				continue
+			# print load_dict['author_id'],load_dict['review_live'],load_dict['score']
+			review_per_user[load_dict['author_id']][load_dict['review_live']] = load_dict['score']
+
+	# with open('review_per_user.json', 'w') as f:
+	# 	f.write(json.dumps(review_per_user))
+	print '评论中抓取的所有用户数量：',len(review_per_user)
+
+	return review_per_user
+
+def get_reviews_by_user(review_per_user):
+	with open(PATH_LIVE,'r') as f:
+		for line in f.readlines():
+			load_dict = json.loads(line)
+			for user,item in load_dict.items():
+				live_see_per_user[user] = item
+
+	user_see_and_review_set = set(review_per_user.keys()) & set(live_see_per_user.keys())
+	user_see_set = set(live_see_per_user.keys()) - set(review_per_user.keys())
+	print '看过也评论过的用户个数：',len(user_see_and_review_set)
+	print '只有看过的live但是没抓到评论过的live信息 用户个数：', len(user_see_set)
+
+	count = 0
+	for user in review_per_user:
+		user_lives = defaultdict(dict)
+		temp = defaultdict(list)
+		for item, score in review_per_user[user].items():
+			if score == 5:
+				temp[5].append(item)
+			elif score == 4:
+				temp[4].append(item)
+			elif score == 3:
+				temp[3].append(item)
+			elif score == 2:
+				temp[2].append(item)
+			elif score == 1:
+				temp[1].append(item)
+			else:
+				continue
+		if user in user_see_and_review_set:
+			if len(list(set(live_see_per_user[user]) - set(review_per_user[user].keys()))) != 0:
+				temp[0] = list(set(live_see_per_user[user]) - set(review_per_user[user].keys())) #看了没评分的
+
+		user_lives[user] = temp
+
+		with open('user_lives.json', 'a+') as f:
+			f.write(json.dumps(user_lives)+'\n')
+		count += 1
+
+	for user in user_see_set:
+		user_lives = defaultdict(dict)
+		temp = defaultdict(list)
+		temp[0] = live_see_per_user[user]
+		user_lives[user] = temp
+
+		with open('user_lives.json', 'a+') as f:
+			f.write(json.dumps(user_lives)+'\n')
+		count += 1
+	
+	print '总用户数量：',count
+	print '用户的live观看评分字典 已保存至',os.path.abspath('user_lives.json')
+
+	return user_lives
+
+def show_review_content():
+	with open(PATH_REVIEW,'r') as f:
+		content = f.readlines()
+		random.shuffle(content)
+		for i,line in enumerate(content):
+			load_dict = json.loads(line)
+			if load_dict['author_id'] == '0':
+				continue
+			if load_dict['score'] == 1 and load_dict['content'] != '':
+				print i,'/',len(content),load_dict['content'],load_dict['score']
+				time.sleep(1)
+	return
+		
+
+if __name__ == '__main__':
+	review_per_user = get_reviews()
+	user_lives = get_reviews_by_user(review_per_user)
+	# show_review_content()
