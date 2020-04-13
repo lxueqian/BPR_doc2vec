@@ -1,0 +1,109 @@
+# encoding: utf-8
+import numpy as np
+import json
+import os
+import time
+import random
+from collections import defaultdict
+# Python3 code for split train and test set for BPR
+
+PATH = '/home/lixueqian/lxq/review_per_user/user_lives.json'
+TODAY = time.strftime('%Y-%m-%d',time.localtime(int(time.time())))
+
+def order_user_item():
+	with open('../doc2vec/id2live.txt','r') as f:
+		live_id_map = json.loads(f.read())
+
+	# for num in [2,3,4,5,6,7,8,9,10]:
+	for num in [8]:
+		user2id = {}
+		item2id = {}
+		id2user = {}
+		id2item = {}
+		train_test_dic = defaultdict(list)
+	
+		with open(PATH, 'r') as f:
+			content = f.readlines()
+			random.shuffle(content)
+			for line in content:
+				load_dict = json.loads(line)
+				for user,item_dict in load_dict.items(): #其实只有1次，不是循环,因为每次只读一行
+					print(user)
+					items = []
+					for lis in list(item_dict.values()):
+						items.extend(lis)
+						items = list(set(items))
+						items = [ite for ite in items if ite in live_id_map.values()]
+
+					if len(items) >= num:
+						# print(user, 'begin......')
+						train_test_dic[user].extend(items)
+
+						if user not in user2id:
+							user2id[user] = len(user2id)+1
+							id2user[len(user2id)] = user
+						for item in items:
+							if item not in item2id:
+								item2id[item] = len(item2id)+1
+								id2item[len(item2id)] = item
+						# print(user, 'finish......')
+
+				if len(user2id) == 20000:  ####控制输出用户个数
+					break
+
+		with open('train_test_dic_'+TODAY+'.json','w') as f:
+			f.write(json.dumps(train_test_dic))
+
+		print('num:',num)
+		print('用户个数：',len(user2id)) 
+		print('live个数：', len(item2id)) 
+
+	print('user2id-item2id-id2user-id2item 保存开始......')	
+	for file in ['user2id','item2id','id2user','id2item']:
+		with open(file+'_'+TODAY+'.txt', 'w') as f:
+			f.write(json.dumps(eval(file)))
+	print('user2id-item2id-id2user-id2item 保存完成......')
+
+	return user2id,item2id
+
+def split_train_test_set(user2id,item2id):
+
+	# print('文件获取开始......')	
+	# with open('user2id.txt', 'r') as f:
+	# 	user2id = json.loads(f.read())
+	# with open('item2id.txt', 'r') as f:
+	# 	item2id = json.loads(f.read())
+	# print('文件获取完成......')
+
+	with open('train_test_dic_'+TODAY+'.json','r') as f:
+		train_test_dic = json.loads(f.read())
+	
+	###处理成为例子中的BPR输入形式
+	count = 0
+	train_dic = defaultdict(list)
+
+	with open('train'+'_'+TODAY+'.txt', 'w') as ft:
+		for user,items in train_test_dic.items():
+			if user in user2id.keys():
+				random.shuffle(items)
+				test_item = items[-1]
+				for item in items[:-1]:
+					ft.write(str(user2id[user])+' '+str(item2id[item])+'\n')
+					count += 1
+					train_dic[user].append(item)
+
+				with open('test'+'_'+TODAY+'.txt', 'a+') as ff:
+					ff.write(str(user2id[user])+' '+str(item2id[test_item])+'\n')
+
+	with open('train_dic_'+TODAY+'.json','w') as f: ##只保留了训练数据，这是与train_test_dic的唯一不同
+		f.write(json.dumps(train_dic))
+
+	print('train'+'_'+TODAY+'.txt',' 已保存至', os.path.abspath('train_'+TODAY+'.txt'))
+	# print('train_dic_'+TODAY+'.json',' 已保存至', os.path.abspath('train_dic_'+TODAY+'.json'))
+	print('train'+'_'+TODAY+'.txt',' 用户—物品对个数：', count) 
+
+
+if __name__ == "__main__":
+	user2id,item2id = order_user_item()
+	split_train_test_set(user2id,item2id)
+
