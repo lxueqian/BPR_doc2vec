@@ -10,10 +10,9 @@ import numpy as np
 
 stop = [line.strip() for line in open('stopword.txt').readlines()]
 
-# print('stop:',stop)
-
+# 把不同文本存在file下的不同txt文件
 def generate_file():
-	with open('/home/lixueqian/lxq/review_per_user/live_stats.json','r') as f:
+	with open('live_stats.json','r') as f:
 		live_dic = json.loads(f.read())
 	
 	live_id_dic = {}
@@ -68,11 +67,9 @@ def construct_vocabulary(raw_documents):
 			words_list.append(j.word)
 		words_list=a_sub_b(words_list,list(stop))
 
-		# print(words_list)
-		# time.sleep(10)
+
 		document = TaggedDocument(words=words_list, tags=[i])
 		# print(document)
-		# time.sleep(10)
 		corpora_documents.append(document)
 		doc.append(words_list)
 
